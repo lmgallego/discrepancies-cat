@@ -16,7 +16,13 @@ def _install_if_missing(pkgs):
             with open(os.devnull, "w") as devnull:
                 subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", p],
                                       stdout=devnull, stderr=devnull)
-_install_if_missing(["xlsxwriter", "openpyxl", "plotly"])
+_install_if_missing(["xlsxwriter", "openpyxl", "plotly", "streamlit-shadcn-ui"])
+
+# Importar componentes modernos de UI
+try:
+    import streamlit_shadcn_ui as ui
+except ImportError:
+    ui = None
 
 # ------------------------------
 # Utilidades
@@ -190,9 +196,84 @@ def generar_reporte_errores(df):
 # ------------------------------
 # Streamlit UI
 # ------------------------------
-st.set_page_config(page_title="📊 Comparación de Pesadas", layout="wide")
+st.set_page_config(
+    page_title="📊 Análisis Discrepancias CAT", 
+    layout="wide",
+    page_icon="📊",
+    initial_sidebar_state="expanded"
+)
 
-st.title("📊 Análisis Discrepancias CAT")
+# CSS personalizado para mejorar la apariencia
+st.markdown("""
+<style>
+    .main-header {
+        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+        padding: 2rem;
+        border-radius: 10px;
+        margin-bottom: 2rem;
+        text-align: center;
+        color: white;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    }
+    .metric-card {
+        background: white;
+        padding: 1rem;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        border-left: 4px solid #667eea;
+        margin: 0.5rem 0;
+    }
+    .success-card {
+        background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
+        color: white;
+        padding: 1.5rem;
+        border-radius: 10px;
+        text-align: center;
+        margin: 1rem 0;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    }
+    .success-card h3 {
+        margin: 0 0 0.5rem 0;
+        font-size: 1.2rem;
+    }
+    .success-card p {
+        margin: 0;
+        opacity: 0.9;
+    }
+    
+    /* Mejorar apariencia de elementos Streamlit */
+    .stSelectbox > div > div {
+        background-color: #f8f9fa;
+        border-radius: 8px;
+    }
+    .stMultiSelect > div > div {
+        border-radius: 8px;
+    }
+    .stFileUploader > div {
+        border-radius: 8px;
+        border: 2px dashed #667eea;
+    }
+    
+    /* Mejorar tablas */
+    .dataframe {
+        border-radius: 8px;
+        overflow: hidden;
+    }
+    
+    /* Sidebar styling */
+    .css-1d391kg {
+        background-color: #f8f9fa;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# Header principal con diseño moderno
+st.markdown("""
+<div class="main-header">
+    <h1>📊 Análisis de Discrepancias CAT</h1>
+    <p>Sistema de comparación entre eRVC (MASTER) y DeclaracionVerificador (EXTRANET)</p>
+</div>
+""", unsafe_allow_html=True)
 
 file_ervc = st.file_uploader("Sube el archivo eRVC (MASTER)", type=["xlsx"])
 file_ext = st.file_uploader("Sube el archivo DeclaracionVerificador (EXTRANET)", type=["xlsx"])
@@ -221,32 +302,106 @@ if file_ervc and file_ext:
             if total_kg_ervc != 0:
                 diff_porcentual = ((total_kg_ervc - total_kg_extranet) / total_kg_ervc) * 100
 
-            col1, col2, col3, col4, col5 = st.columns(5)
-            col1.metric("nomCeller únicos Extranet", unique_extranet)
-            col2.metric("nomCeller únicos eRVC", unique_ervc)
-            col3.metric("Total Kg Extranet", total_kg_extranet)
-            col4.metric("kgTotals eRVC", total_kg_ervc)
-            col5.metric("Diferencia Porcentual Kg (%)", f"{diff_porcentual:.2f}%")
+            # Usar metric cards modernas si está disponible shadcn-ui
+            if ui is not None:
+                cols = st.columns(5)
+                with cols[0]:
+                    ui.metric_card(
+                        title="Bodegas Extranet", 
+                        content=str(unique_extranet), 
+                        description="Bodegas únicas registradas", 
+                        key="card_extranet"
+                    )
+                with cols[1]:
+                    ui.metric_card(
+                        title="Bodegas eRVC", 
+                        content=str(unique_ervc), 
+                        description="Bodegas únicas en sistema", 
+                        key="card_ervc"
+                    )
+                with cols[2]:
+                    ui.metric_card(
+                        title="Total Kg Extranet", 
+                        content=f"{total_kg_extranet:,.0f}", 
+                        description="Kilogramos registrados", 
+                        key="card_kg_ext"
+                    )
+                with cols[3]:
+                    ui.metric_card(
+                        title="Total Kg eRVC", 
+                        content=f"{total_kg_ervc:,.0f}", 
+                        description="Kilogramos en sistema", 
+                        key="card_kg_ervc"
+                    )
+                with cols[4]:
+                    ui.metric_card(
+                        title="Diferencia %", 
+                        content=f"{diff_porcentual:.2f}%", 
+                        description="Variación entre sistemas", 
+                        key="card_diff"
+                    )
+            else:
+                # Fallback a métricas estándar de Streamlit
+                col1, col2, col3, col4, col5 = st.columns(5)
+                col1.metric("nomCeller únicos Extranet", unique_extranet)
+                col2.metric("nomCeller únicos eRVC", unique_ervc)
+                col3.metric("Total Kg Extranet", total_kg_extranet)
+                col4.metric("kgTotals eRVC", total_kg_ervc)
+                col5.metric("Diferencia Porcentual Kg (%)", f"{diff_porcentual:.2f}%")
 
-        # Mostrar errores
+        # Mostrar errores con diseño mejorado
         df_errores = generar_reporte_errores(extranet_df)
         if not df_errores.empty:
-            st.subheader("Reporte de errores de introducción")
-            st.dataframe(df_errores, use_container_width=True)
+            st.markdown("### 🚨 Reporte de Errores de Introducción")
+            
+            # Mostrar tabla de errores con mejor formato
+            st.dataframe(
+                df_errores, 
+                use_container_width=True,
+                column_config={
+                    "Verificador": st.column_config.TextColumn("👤 Verificador"),
+                    "Cantidad": st.column_config.NumberColumn("📊 Cantidad", format="%d"),
+                    "Tipo error": st.column_config.TextColumn("⚠️ Tipo de Error")
+                }
+            )
 
-            # Gráfico interactivo único
+            # Gráfico interactivo mejorado
             import plotly.express as px
-            fig = px.bar(df_errores, x='Verificador', y='Cantidad', color='Tipo error',
-                         title='Errores por Verificador y Tipo',
-                         labels={'Cantidad': 'Número de Errores'},
-                         hover_data=['Tipo error', 'Cantidad'])
-            fig.update_layout(barmode='stack')
+            fig = px.bar(
+                df_errores, 
+                x='Verificador', 
+                y='Cantidad', 
+                color='Tipo error',
+                title='📈 Distribución de Errores por Verificador',
+                labels={'Cantidad': 'Número de Errores', 'Verificador': 'Verificador'},
+                hover_data=['Tipo error', 'Cantidad'],
+                color_discrete_sequence=['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4']
+            )
+            fig.update_layout(
+                barmode='stack',
+                plot_bgcolor='rgba(0,0,0,0)',
+                paper_bgcolor='rgba(0,0,0,0)',
+                font=dict(family="Arial, sans-serif", size=12),
+                title_font_size=16
+            )
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.success("✅ Sin errores de introducción detectados")
+            st.markdown("""
+            <div class="success-card">
+                <h3>✅ Excelente!</h3>
+                <p>No se detectaron errores de introducción en los datos</p>
+            </div>
+            """, unsafe_allow_html=True)
 
-        # Selector múltiple de nipd + nomCeller
-        st.sidebar.subheader("Selecciona Bodega a Analizar")
+        # Selector múltiple de nipd + nomCeller con diseño mejorado
+        st.sidebar.markdown("### 🎯 Análisis Detallado por Bodegas")
+        
+        st.sidebar.markdown("""
+        <div style="background-color: #f8f9fa; padding: 15px; border-radius: 10px; margin: 10px 0; border-left: 4px solid #007bff;">
+            <p style="margin: 0; color: #495057; font-size: 12px;">💡 <strong>Tip:</strong> Selecciona bodegas específicas para un análisis más detallado de las discrepancias</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
         if "nipd" in eRVC_df.columns and "nomCeller" in eRVC_df.columns:
             opciones = (
                 eRVC_df[["nipd", "nomCeller"]]
@@ -256,8 +411,9 @@ if file_ervc and file_ext:
                 .tolist()
             )
             seleccion = st.sidebar.multiselect(
-                "Selecciona nipd para la comparación",
-                opciones
+                "🏭 Selecciona bodegas para análisis detallado:",
+                opciones,
+                help="Puedes seleccionar múltiples bodegas para comparar sus métricas específicas"
             )
             if seleccion:
                 st.write(f"Has seleccionado {len(seleccion)} nipd para comparar")
@@ -285,13 +441,54 @@ if file_ervc and file_ext:
                     diff_porcentual_sel = 0
                     if total_kg_ervc_sel != 0:
                         diff_porcentual_sel = ((total_kg_ervc_sel - total_kg_extranet_sel) / total_kg_ervc_sel) * 100
-                    st.subheader("Métricas para nipd seleccionados")
-                    col1, col2, col3, col4, col5 = st.columns(5)
-                    col1.metric("nomCeller únicos Extranet (sel)", unique_extranet_sel)
-                    col2.metric("nomCeller únicos eRVC (sel)", unique_ervc_sel)
-                    col3.metric("Total Kg Extranet (sel)", total_kg_extranet_sel)
-                    col4.metric("kgTotals eRVC (sel)", total_kg_ervc_sel)
-                    col5.metric("Diferencia Porcentual Kg (%) (sel)", f"{diff_porcentual_sel:.2f}%")
+                    st.markdown("### 📊 Métricas para Bodegas Seleccionadas")
+                    
+                    # Usar metric cards modernas para selección
+                    if ui is not None:
+                        cols = st.columns(5)
+                        with cols[0]:
+                            ui.metric_card(
+                                title="Bodegas Extranet", 
+                                content=str(unique_extranet_sel), 
+                                description="Seleccionadas", 
+                                key="card_extranet_sel"
+                            )
+                        with cols[1]:
+                            ui.metric_card(
+                                title="Bodegas eRVC", 
+                                content=str(unique_ervc_sel), 
+                                description="Seleccionadas", 
+                                key="card_ervc_sel"
+                            )
+                        with cols[2]:
+                            ui.metric_card(
+                                title="Kg Extranet", 
+                                content=f"{total_kg_extranet_sel:,.0f}", 
+                                description="Selección", 
+                                key="card_kg_ext_sel"
+                            )
+                        with cols[3]:
+                            ui.metric_card(
+                                title="Kg eRVC", 
+                                content=f"{total_kg_ervc_sel:,.0f}", 
+                                description="Selección", 
+                                key="card_kg_ervc_sel"
+                            )
+                        with cols[4]:
+                            ui.metric_card(
+                                title="Diferencia %", 
+                                content=f"{diff_porcentual_sel:.2f}%", 
+                                description="Variación", 
+                                key="card_diff_sel"
+                            )
+                    else:
+                        # Fallback a métricas estándar
+                        col1, col2, col3, col4, col5 = st.columns(5)
+                        col1.metric("nomCeller únicos Extranet (sel)", unique_extranet_sel)
+                        col2.metric("nomCeller únicos eRVC (sel)", unique_ervc_sel)
+                        col3.metric("Total Kg Extranet (sel)", total_kg_extranet_sel)
+                        col4.metric("kgTotals eRVC (sel)", total_kg_ervc_sel)
+                        col5.metric("Diferencia Porcentual Kg (%) (sel)", f"{diff_porcentual_sel:.2f}%")
         else:
             st.warning("No se encontraron columnas nipd o nomCeller en eRVC")
 
