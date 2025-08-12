@@ -561,6 +561,200 @@ if eRVC_file and extranet_file:
                     file_name=filename,
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
+        
+        # Nueva sección: Análisis Detallada Discrepancias
+        st.header("🔍 Análisis Detallada Discrepancias")
+        
+        # Verificar que tenemos las columnas necesarias
+        if ('dataPesada' in eRVC_df.columns and 'kgTotals' in eRVC_df.columns and 
+            'nipd' in eRVC_df.columns and 'nomCeller' in eRVC_df.columns and
+            'dataPesada' in extranet_df.columns and 'Kg:' in extranet_df.columns and
+            'nipd' in extranet_df.columns):
+            
+            # Convertir fechas a datetime si no lo están ya
+            try:
+                eRVC_df['dataPesada'] = pd.to_datetime(eRVC_df['dataPesada'], format='%d/%m/%Y', errors='coerce')
+                extranet_df['dataPesada'] = pd.to_datetime(extranet_df['dataPesada'], format='%d/%m/%Y', errors='coerce')
+            except:
+                pass
+            
+            # Obtener fechas únicas disponibles
+            fechas_eRVC = eRVC_df['dataPesada'].dropna().dt.date.unique()
+            fechas_extranet = extranet_df['dataPesada'].dropna().dt.date.unique()
+            fechas_disponibles = sorted(set(fechas_eRVC) | set(fechas_extranet))
+            
+            if fechas_disponibles:
+                # Inicializar session state para fechas
+                if 'fechas_seleccionadas' not in st.session_state:
+                    st.session_state.fechas_seleccionadas = fechas_disponibles[:5] if len(fechas_disponibles) > 5 else fechas_disponibles
+                
+                # Opción para seleccionar todas las fechas
+                col1, col2 = st.columns([3, 1])
+                
+                with col1:
+                    # Selector de fechas
+                    fechas_seleccionadas = st.multiselect(
+                        "📅 Seleccionar Fechas para Análisis",
+                        fechas_disponibles,
+                        default=st.session_state.fechas_seleccionadas,
+                        help="Elige las fechas que quieres analizar",
+                        key="selector_fechas"
+                    )
+                    # Actualizar session state
+                    st.session_state.fechas_seleccionadas = fechas_seleccionadas
+                
+                with col2:
+                    st.markdown("<br>", unsafe_allow_html=True)  # Espaciado
+                    if st.button("🗓️ Seleccionar Todas", help="Selecciona todas las fechas disponibles"):
+                        st.session_state.fechas_seleccionadas = fechas_disponibles
+                        st.rerun()
+                    
+                    if st.button("🗑️ Limpiar Selección", help="Deselecciona todas las fechas"):
+                        st.session_state.fechas_seleccionadas = []
+                        st.rerun()
+                
+                if fechas_seleccionadas:
+                    # Filtrar datos por fechas seleccionadas
+                    eRVC_filtrado_fecha = eRVC_df[eRVC_df['dataPesada'].dt.date.isin(fechas_seleccionadas)]
+                    extranet_filtrado_fecha = extranet_df[extranet_df['dataPesada'].dt.date.isin(fechas_seleccionadas)]
+                    
+                    # Agrupar y sumar kg por nipd para eRVC
+                    eRVC_agrupado = eRVC_filtrado_fecha.groupby('nipd').agg({
+                        'nomCeller': 'first',
+                        'kgTotals': 'sum'
+                    }).reset_index()
+                    
+                    # Agrupar y sumar kg por nipd para Extranet
+                    extranet_agrupado = extranet_filtrado_fecha.groupby('nipd').agg({
+                        'Kg:': 'sum'
+                    }).reset_index()
+                    
+                    # Combinar ambos DataFrames
+                    analisis_general = pd.merge(eRVC_agrupado, extranet_agrupado, on='nipd', how='outer')
+                    
+                    # Rellenar valores NaN con 0
+                    analisis_general['kgTotals'] = analisis_general['kgTotals'].fillna(0)
+                    analisis_general['Kg:'] = analisis_general['Kg:'].fillna(0)
+                    
+                    # Calcular porcentaje de discrepancia
+                    analisis_general['% Discrepancia'] = np.where(
+                        analisis_general['kgTotals'] != 0,
+                        abs(analisis_general['kgTotals'] - analisis_general['Kg:']) / analisis_general['kgTotals'] * 100,
+                        np.where(analisis_general['Kg:'] != 0, 100, 0)
+                    )
+                    
+                    # Renombrar columnas para mejor visualización
+                    analisis_general = analisis_general.rename(columns={
+                        'kgTotals': 'Kg eRVC',
+                        'Kg:': 'Kg Extranet'
+                    })
+                    
+                    # Reordenar columnas
+                    analisis_general = analisis_general[['nipd', 'nomCeller', 'Kg eRVC', 'Kg Extranet', '% Discrepancia']]
+                    
+                    # Crear análisis para bodegas controladas (solo nipd coincidentes)
+                    nipds_extranet = set(extranet_agrupado['nipd'].unique())
+                    analisis_controladas = analisis_general[analisis_general['nipd'].isin(nipds_extranet)].copy()
+                    
+                    # Mostrar tabla con pestañas
+                    tab1, tab2 = st.tabs(["📊 Análisis General", "🎯 Bodegas Controladas"])
+                     
+                    with tab1:
+                        st.subheader("📊 Análisis General")
+                        st.caption(f"Análisis para {len(fechas_seleccionadas)} fechas seleccionadas - Todas las bodegas")
+                        
+                        # Función para colorear filas con discrepancia > 15%
+                        def highlight_discrepancia(row):
+                            if row['% Discrepancia'] > 15:
+                                return ['background-color: #ffebee'] * len(row)
+                            return [''] * len(row)
+                        
+                        # Aplicar formato y mostrar tabla
+                        styled_df = analisis_general.style.apply(highlight_discrepancia, axis=1)
+                        styled_df = styled_df.format({
+                            'Kg eRVC': '{:.2f}',
+                            'Kg Extranet': '{:.2f}',
+                            '% Discrepancia': '{:.2f}%'
+                        })
+                        
+                        st.dataframe(styled_df, use_container_width=True, height=400)
+                        
+                        # Métricas resumen para Análisis General
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            total_discrepancias = len(analisis_general[analisis_general['% Discrepancia'] > 15])
+                            create_metric_card(
+                                "Discrepancias >15%",
+                                total_discrepancias,
+                                f"De {len(analisis_general)} registros",
+                                "⚠️"
+                            )
+                        with col2:
+                            promedio_discrepancia = analisis_general['% Discrepancia'].mean()
+                            create_metric_card(
+                                "Promedio Discrepancia",
+                                f"{promedio_discrepancia:.2f}%",
+                                "Todas las bodegas",
+                                "📊"
+                            )
+                        with col3:
+                            max_discrepancia = analisis_general['% Discrepancia'].max()
+                            create_metric_card(
+                                "Máxima Discrepancia",
+                                f"{max_discrepancia:.2f}%",
+                                "Peor caso",
+                                "🔴"
+                            )
+                    
+                    with tab2:
+                        st.subheader("🎯 Bodegas Controladas")
+                        st.caption(f"Análisis para {len(fechas_seleccionadas)} fechas seleccionadas - Solo bodegas con datos en Extranet")
+                        
+                        if len(analisis_controladas) > 0:
+                            # Aplicar formato y mostrar tabla
+                            styled_df_controladas = analisis_controladas.style.apply(highlight_discrepancia, axis=1)
+                            styled_df_controladas = styled_df_controladas.format({
+                                'Kg eRVC': '{:.2f}',
+                                'Kg Extranet': '{:.2f}',
+                                '% Discrepancia': '{:.2f}%'
+                            })
+                            
+                            st.dataframe(styled_df_controladas, use_container_width=True, height=400)
+                            
+                            # Métricas resumen para Bodegas Controladas
+                            col1, col2, col3 = st.columns(3)
+                            with col1:
+                                total_discrepancias_ctrl = len(analisis_controladas[analisis_controladas['% Discrepancia'] > 15])
+                                create_metric_card(
+                                    "Discrepancias >15%",
+                                    total_discrepancias_ctrl,
+                                    f"De {len(analisis_controladas)} registros",
+                                    "⚠️"
+                                )
+                            with col2:
+                                promedio_discrepancia_ctrl = analisis_controladas['% Discrepancia'].mean()
+                                create_metric_card(
+                                    "Promedio Discrepancia",
+                                    f"{promedio_discrepancia_ctrl:.2f}%",
+                                    "Bodegas controladas",
+                                    "📊"
+                                )
+                            with col3:
+                                max_discrepancia_ctrl = analisis_controladas['% Discrepancia'].max()
+                                create_metric_card(
+                                    "Máxima Discrepancia",
+                                    f"{max_discrepancia_ctrl:.2f}%",
+                                    "Peor caso controlado",
+                                    "🔴"
+                                )
+                        else:
+                            st.warning("⚠️ No se encontraron bodegas controladas para las fechas seleccionadas")
+                else:
+                    st.info("📅 Selecciona al menos una fecha para ver el análisis")
+            else:
+                st.warning("⚠️ No se encontraron fechas válidas en los datos")
+        else:
+            st.error("❌ Faltan columnas necesarias para el análisis detallado")
             
     except Exception as e:
         st.error(f"❌ Error al procesar los archivos: {str(e)}")
