@@ -16,17 +16,23 @@ def _install_if_missing(pkgs):
             with open(os.devnull, "w") as devnull:
                 subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", p],
                                       stdout=devnull, stderr=devnull)
-_install_if_missing(["xlsxwriter", "openpyxl", "plotly"])
+_install_if_missing(["xlsxwriter", "openpyxl", "plotly", "streamlit-shadcn-ui"])
+
+# Importar componentes modernos de UI
+try:
+    import streamlit_shadcn_ui as ui
+except ImportError:
+    ui = None
 
 # ------------------------------
 # Utilidades
 # ------------------------------
 def normalize_text(s):
-    if pd.isna(s): return ""
+    if pd.isna(s) or s == "":
+        return ""
     s = str(s).strip().lower()
-    s = ''.join(c for c in unicodedata.normalize('NFKD', s) if not unicodedata.combining(c))
-    s = re.sub(r'\s+', ' ', s)
-    s = re.sub(r'[:;]+$', '', s).strip()
+    s = unicodedata.normalize("NFD", s)
+    s = re.sub(r"[^\w\s]", "", s)
     return s
 
 def build_normalized_map(columns):
@@ -34,22 +40,58 @@ def build_normalized_map(columns):
 
 def safe_get_col(map_norm, candidates):
     for cand in candidates:
-        key = normalize_text(cand)
-        if key in map_norm:
-            return map_norm[key]
+        norm_cand = normalize_text(cand)
+        if norm_cand in map_norm:
+            return map_norm[norm_cand]
     return None
 
 def detect_header_row(xl_bytes, sheet_index=0, max_probe_rows=20, min_hits=3):
-    probe = pd.read_excel(BytesIO(xl_bytes), sheet_name=sheet_index, header=None, nrows=max_probe_rows)
-    targets = set([
-        "dia y hora", "razon social", "nipbd", "nombre y apellidos viticultor",
-        "nif viticultor", "variedad", "total kg", "%", "grado", "zona"
-    ])
-    for r in range(len(probe)):
-        row_vals = set(normalize_text(v) for v in probe.iloc[r].tolist())
-        if len(targets.intersection(row_vals)) >= min_hits:
-            return r
+    try:
+        for row_idx in range(max_probe_rows):
+            df_test = pd.read_excel(BytesIO(xl_bytes), sheet_name=sheet_index, header=row_idx, nrows=1)
+            hits = sum(1 for col in df_test.columns if any(kw in str(col).lower() for kw in ["nipd", "tiquet", "verificador", "pesnet", "nif"]))
+            if hits >= min_hits:
+                return row_idx
+    except Exception:
+        pass
     return None
+
+def limpiar_eRVC(eRVC_df):
+    """Limpia y procesa el DataFrame de eRVC según especificaciones"""
+    df = eRVC_df.copy()
+    
+    # Filtrar columna 'dos' para mantener solo 'CV'
+    if 'dos' in df.columns:
+        df = df[df['dos'] == 'CV']
+    
+    # Formatear dataPesada a DD/MM/AAAA (sin hora)
+    if 'dataPesada' in df.columns:
+        df['dataPesada'] = pd.to_datetime(df['dataPesada'], errors='coerce').dt.strftime('%d/%m/%Y')
+    
+    # Formatear dataGravacio a DD/MM/AAAA (sin hora)
+    if 'dataGravacio' in df.columns:
+        df['dataGravacio'] = pd.to_datetime(df['dataGravacio'], errors='coerce').dt.strftime('%d/%m/%Y')
+    
+    # Convertir columnas problemáticas a string para evitar errores de tipo
+    string_columns = ['numPesada', 'nipd', 'nifLliurador']
+    for col in string_columns:
+        if col in df.columns:
+            df[col] = df[col].astype(str)
+    
+    # Eliminar columnas especificadas
+    columns_to_drop = [
+        'qualificacioPesada', 
+        'motiuPesadaIncidental', 
+        'modificada', 
+        'destiRaim', 
+        'varietatDesc'
+    ]
+    
+    existing_columns_to_drop = [col for col in columns_to_drop if col in df.columns]
+    if existing_columns_to_drop:
+        df.drop(columns=existing_columns_to_drop, inplace=True)
+    
+    return df
 
 def limpiar_extranet(extranet_bytes, eRVC_df):
     extranet_xl = pd.ExcelFile(BytesIO(extranet_bytes))
@@ -190,110 +232,357 @@ def generar_reporte_errores(df):
 # ------------------------------
 # Streamlit UI
 # ------------------------------
-st.set_page_config(page_title="📊 Comparación de Pesadas", layout="wide")
+st.set_page_config(
+    page_title="📊 Análisis Discrepancias CAT", 
+    layout="wide",
+    page_icon="📊",
+    initial_sidebar_state="expanded"
+)
 
-st.title("📊 Análisis Discrepancias CAT")
+# CSS personalizado para mejorar la apariencia
+st.markdown("""
+<style>
+    .main-header {
+        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+        padding: 2rem;
+        border-radius: 10px;
+        margin-bottom: 2rem;
+        text-align: center;
+        color: white;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    }
+    .metric-card {
+        background: white;
+        padding: 1rem;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        border-left: 4px solid #667eea;
+        margin: 0.5rem 0;
+    }
+    .success-card {
+        background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
+        color: white;
+        padding: 1.5rem;
+        border-radius: 10px;
+        text-align: center;
+        margin: 1rem 0;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    }
+    .success-card h3 {
+        margin: 0 0 0.5rem 0;
+        font-size: 1.2rem;
+    }
+    .success-card p {
+        margin: 0;
+        opacity: 0.9;
+    }
+    
+    /* Mejorar apariencia de elementos Streamlit */
+    .stSelectbox > div > div {
+        background-color: #f8f9fa;
+        border-radius: 8px;
+    }
+    .stMultiSelect > div > div {
+        border-radius: 8px;
+    }
+    .stFileUploader > div {
+        border-radius: 8px;
+        border: 2px dashed #667eea;
+    }
+    
+    /* Mejorar tablas */
+    .dataframe {
+        border-radius: 8px;
+        overflow: hidden;
+    }
+    
+    /* Sidebar styling */
+    .css-1d391kg {
+        background-color: #f8f9fa;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-file_ervc = st.file_uploader("Sube el archivo eRVC (MASTER)", type=["xlsx"])
-file_ext = st.file_uploader("Sube el archivo DeclaracionVerificador (EXTRANET)", type=["xlsx"])
+# Encabezado principal con diseño mejorado
+st.markdown("""
+<div class="main-header">
+    <h1>📊 Análisis de Discrepancias CAT</h1>
+    <p>Sistema de comparación entre eRVC y Extranet</p>
+</div>
+""", unsafe_allow_html=True)
 
-if file_ervc and file_ext:
+# Función para crear métricas modernas
+def create_metric_card(title, value, description="", icon="📊"):
+    if ui is not None:
+        try:
+            return ui.metric_card(
+                title=title,
+                content=str(value),
+                description=description,
+                key=f"metric_{title.replace(' ', '_').lower()}"
+            )
+        except:
+            pass
+    
+    # Fallback a métricas estándar con estilo mejorado
+    st.markdown(f"""
+    <div class="metric-card">
+        <h4 style="margin: 0; color: #667eea;">{icon} {title}</h4>
+        <h2 style="margin: 0.5rem 0; color: #333;">{value}</h2>
+        <p style="margin: 0; color: #666; font-size: 0.9rem;">{description}</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+# Sidebar para carga de archivos
+with st.sidebar:
+    st.header("📁 Carga de Archivos")
+    
+    eRVC_file = st.file_uploader(
+        "📋 Archivo eRVC (MASTER)", 
+        type=["xlsx", "xls"],
+        help="Archivo principal de referencia"
+    )
+    
+    extranet_file = st.file_uploader(
+        "🌐 Archivo Extranet", 
+        type=["xlsx", "xls"],
+        help="Archivo de declaraciones del verificador"
+    )
+
+if eRVC_file and extranet_file:
     try:
-        eRVC_df = pd.ExcelFile(file_ervc).parse(0)
-        if 'nipd' in eRVC_df.columns:
-            # Convertir a string preservando el formato original
-            eRVC_df['nipd'] = eRVC_df['nipd'].apply(lambda x: str(x).replace('.', '').replace(',', '').strip() if pd.notna(x) else '')
-        extranet_df = limpiar_extranet(file_ext.read(), eRVC_df)
-
-        st.session_state.eRVC_df = eRVC_df
-        st.session_state.extranet = extranet_df
-
-        st.subheader("Vista previa Extranet")
-        st.dataframe(extranet_df.head(20), use_container_width=True)
-
-        # Cálculos para cards
-        if 'nomCeller' in extranet_df.columns and 'nomCeller' in eRVC_df.columns:
-            unique_extranet = extranet_df['nomCeller'].nunique()
-            unique_ervc = eRVC_df['nomCeller'].nunique()
-            total_kg_extranet = extranet_df.get('Kg:', pd.Series()).sum()
-            total_kg_ervc = eRVC_df.get('kgTotals', pd.Series()).sum()
-            diff_porcentual = 0
-            if total_kg_ervc != 0:
-                diff_porcentual = ((total_kg_ervc - total_kg_extranet) / total_kg_ervc) * 100
-
-            col1, col2, col3, col4, col5 = st.columns(5)
-            col1.metric("nomCeller únicos Extranet", unique_extranet)
-            col2.metric("nomCeller únicos eRVC", unique_ervc)
-            col3.metric("Total Kg Extranet", total_kg_extranet)
-            col4.metric("kgTotals eRVC", total_kg_ervc)
-            col5.metric("Diferencia Porcentual Kg (%)", f"{diff_porcentual:.2f}%")
-
-        # Mostrar errores
-        df_errores = generar_reporte_errores(extranet_df)
-        if not df_errores.empty:
-            st.subheader("Reporte de errores de introducción")
-            st.dataframe(df_errores, use_container_width=True)
-
-            # Gráfico interactivo único
+        # Cargar y limpiar eRVC
+        eRVC_original = pd.read_excel(eRVC_file)
+        eRVC_df = limpiar_eRVC(eRVC_original)
+        st.success(f"✅ eRVC cargado y procesado: {len(eRVC_df)} registros (de {len(eRVC_original)} originales)")
+        
+        # Limpiar Extranet
+        extranet_df = limpiar_extranet(extranet_file.read(), eRVC_original)
+        st.success(f"✅ Extranet procesado: {len(extranet_df)} registros")
+        
+        # Métricas principales con diseño moderno
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            create_metric_card(
+                "Registros eRVC", 
+                f"{len(eRVC_df):,}",
+                "Archivo maestro",
+                "📋"
+            )
+        
+        with col2:
+            create_metric_card(
+                "Registros Extranet", 
+                f"{len(extranet_df):,}",
+                "Después de limpieza",
+                "🌐"
+            )
+        
+        with col3:
+            common_cols = set(eRVC_df.columns) & set(extranet_df.columns)
+            create_metric_card(
+                "Columnas Comunes", 
+                len(common_cols),
+                "Para comparación",
+                "🔗"
+            )
+        
+        with col4:
+            if 'nipd' in extranet_df.columns:
+                unique_nipd = extranet_df['nipd'].nunique()
+                create_metric_card(
+                    "NIPD Únicos", 
+                    f"{unique_nipd:,}",
+                    "En Extranet",
+                    "🏷️"
+                )
+        
+        # Reporte de errores con diseño mejorado
+        st.header("🚨 Reporte de Errores")
+        errores_df = generar_reporte_errores(extranet_df)
+        
+        if not errores_df.empty:
+            # Mostrar tabla de errores con iconos
+            st.dataframe(
+                errores_df,
+                use_container_width=True,
+                column_config={
+                    "Verificador": st.column_config.TextColumn(
+                        "👤 Verificador",
+                        help="Identificador del verificador"
+                    ),
+                    "Cantidad": st.column_config.NumberColumn(
+                        "📊 Cantidad",
+                        help="Número de errores detectados"
+                    ),
+                    "Tipo error": st.column_config.TextColumn(
+                        "⚠️ Tipo de Error",
+                        help="Categoría del error encontrado"
+                    )
+                }
+            )
+            
+            # Gráfico de errores con colores modernos
             import plotly.express as px
-            fig = px.bar(df_errores, x='Verificador', y='Cantidad', color='Tipo error',
-                         title='Errores por Verificador y Tipo',
-                         labels={'Cantidad': 'Número de Errores'},
-                         hover_data=['Tipo error', 'Cantidad'])
-            fig.update_layout(barmode='stack')
+            fig = px.bar(
+                errores_df, 
+                x="Verificador", 
+                y="Cantidad", 
+                color="Tipo error",
+                title="📊 Distribución de Errores por Verificador",
+                color_discrete_sequence=["#FF6B6B", "#4ECDC4", "#45B7D1", "#96CEB4"]
+            )
+            fig.update_layout(
+                plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)",
+                font=dict(family="Arial, sans-serif")
+            )
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.success("✅ Sin errores de introducción detectados")
-
-        # Selector múltiple de nipd + nomCeller
-        st.sidebar.subheader("Selecciona Bodega a Analizar")
-        if "nipd" in eRVC_df.columns and "nomCeller" in eRVC_df.columns:
-            opciones = (
-                eRVC_df[["nipd", "nomCeller"]]
-                .drop_duplicates()
-                .sort_values("nipd")
-                .apply(lambda x: f"{x['nipd']} – {x['nomCeller']}", axis=1)
-                .tolist()
+            # Mensaje de éxito mejorado
+            st.markdown("""
+            <div class="success-card">
+                <h3>✅ Excelente!</h3>
+                <p>No se detectaron errores de introducción en los datos</p>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        # Análisis de discrepancias con diseño mejorado
+        st.header("🔍 Análisis de Discrepancias")
+        
+        # Tip visual mejorado
+        st.markdown("""
+        <div style="background-color: #f8f9fa; padding: 15px; border-radius: 10px; margin: 10px 0; border-left: 4px solid #007bff;">
+            <p style="margin: 0; color: #495057; font-size: 12px;">💡 <strong>Tip:</strong> Selecciona bodegas específicas para un análisis más detallado de las discrepancias</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        if 'nipd' in extranet_df.columns and 'nomCeller' in extranet_df.columns:
+            # Crear opciones combinando nipd y nomCeller
+            extranet_unique = extranet_df[['nipd', 'nomCeller']].drop_duplicates().dropna()
+            opciones_bodegas = [f"{row['nipd']} - {row['nomCeller']}" for _, row in extranet_unique.iterrows()]
+            opciones_bodegas = sorted(opciones_bodegas)
+            
+            bodegas_seleccionadas = st.multiselect(
+                "🏭 Seleccionar Bodegas",
+                opciones_bodegas,
+                default=opciones_bodegas[:5] if len(opciones_bodegas) > 5 else opciones_bodegas,
+                help="Elige las bodegas que quieres analizar (nipd - nombre)"
             )
-            seleccion = st.sidebar.multiselect(
-                "Selecciona nipd para la comparación",
-                opciones
-            )
-            if seleccion:
-                st.write(f"Has seleccionado {len(seleccion)} nipd para comparar")
-                selected_nipds = [s.split(' – ')[0] for s in seleccion]
+            
+            if bodegas_seleccionadas:
+                # Extraer los nipd de las opciones seleccionadas
+                nipds_seleccionados = [opcion.split(' - ')[0] for opcion in bodegas_seleccionadas]
+                extranet_filtrado = extranet_df[extranet_df['nipd'].isin(nipds_seleccionados)]
                 
-                # Filtrar exactamente por los nipd seleccionados
-                filtered_ervc = eRVC_df[eRVC_df['nipd'].isin(selected_nipds)]
-                filtered_extranet = extranet_df[extranet_df['nipd'].isin(selected_nipds)]
+                # Métricas de selección con diseño moderno
+                col1, col2 = st.columns(2)
+                with col1:
+                    create_metric_card(
+                        "Bodegas Seleccionadas", 
+                        len(bodegas_seleccionadas),
+                        f"De {len(opciones_bodegas)} disponibles",
+                        "🏭"
+                    )
+                with col2:
+                    create_metric_card(
+                        "Registros Filtrados", 
+                        f"{len(extranet_filtrado):,}",
+                        f"De {len(extranet_df):,} totales",
+                        "📊"
+                    )
+        
+        # Vista de datos
+        st.header("📋 Vista de Datos")
+        
+        # Pestaña para datos originales
+        with st.expander("📋 Ver eRVC Original", expanded=False):
+            st.dataframe(eRVC_original.head(100), use_container_width=True)
+        
+        # Mostrar datos procesados lado a lado
+        st.subheader("📊 Datos Procesados")
+        col1, col2 = st.columns(2)
+        
+        # Aplicar el mismo filtro de bodegas a eRVC si existe
+        eRVC_display = eRVC_df
+        if 'bodegas_seleccionadas' in locals() and bodegas_seleccionadas and 'nipd' in eRVC_df.columns:
+            # Usar los mismos nipd seleccionados
+            nipds_seleccionados = [opcion.split(' - ')[0] for opcion in bodegas_seleccionadas]
+            eRVC_display = eRVC_df[eRVC_df['nipd'].isin(nipds_seleccionados)]
+        
+        with col1:
+            st.markdown("**🧹 eRVC Procesado**")
+            if 'bodegas_seleccionadas' in locals() and bodegas_seleccionadas:
+                st.caption(f"Filtrado por {len(bodegas_seleccionadas)} bodegas seleccionadas")
+            st.dataframe(eRVC_display.head(50), use_container_width=True, height=400)
+            
+        with col2:
+            st.markdown("**🌐 Extranet Procesado**")
+            display_df = extranet_filtrado if 'extranet_filtrado' in locals() else extranet_df
+            if 'bodegas_seleccionadas' in locals() and bodegas_seleccionadas:
+                st.caption(f"Filtrado por {len(bodegas_seleccionadas)} bodegas seleccionadas")
+            st.dataframe(display_df.head(50), use_container_width=True, height=400)
+        
+        # Exportación con botón mejorado
+        st.header("💾 Exportar Resultados")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("📥 Descargar Extranet Procesado", type="primary"):
+                output = BytesIO()
+                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                    extranet_df.to_excel(writer, sheet_name='Extranet_Procesado', index=False)
+                    if not errores_df.empty:
+                        errores_df.to_excel(writer, sheet_name='Reporte_Errores', index=False)
                 
-                # Verificar qué nipd están presentes en cada dataset
-                nipds_en_ervc = set(filtered_ervc['nipd'].unique())
-                nipds_en_extranet = set(filtered_extranet['nipd'].unique())
-                missing_in_extranet = set(selected_nipds) - nipds_en_extranet
-                missing_in_ervc = set(selected_nipds) - nipds_en_ervc
+                st.download_button(
+                    label="📁 Descargar archivo Excel",
+                    data=output.getvalue(),
+                    file_name="extranet_procesado.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+        
+        with col2:
+            if st.button("🧹 Descargar eRVC Procesado", type="primary"):
+                output = BytesIO()
+                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                    # Usar los datos filtrados si existe el filtro
+                    data_to_export = eRVC_display if 'eRVC_display' in locals() else eRVC_df
+                    data_to_export.to_excel(writer, sheet_name='eRVC_Procesado', index=False)
                 
-                if missing_in_extranet:
-                    st.warning(f"Los siguientes nipd no se encuentran en Extranet: {', '.join(missing_in_extranet)}")
-                if missing_in_ervc:
-                    st.warning(f"Los siguientes nipd no se encuentran en eRVC: {', '.join(missing_in_ervc)}")
-                if not filtered_extranet.empty:
-                    unique_extranet_sel = filtered_extranet['nomCeller'].nunique()
-                    unique_ervc_sel = filtered_ervc['nomCeller'].nunique()
-                    total_kg_extranet_sel = filtered_extranet.get('Kg:', pd.Series()).sum()
-                    total_kg_ervc_sel = filtered_ervc.get('kgTotals', pd.Series()).sum()
-                    diff_porcentual_sel = 0
-                    if total_kg_ervc_sel != 0:
-                        diff_porcentual_sel = ((total_kg_ervc_sel - total_kg_extranet_sel) / total_kg_ervc_sel) * 100
-                    st.subheader("Métricas para nipd seleccionados")
-                    col1, col2, col3, col4, col5 = st.columns(5)
-                    col1.metric("nomCeller únicos Extranet (sel)", unique_extranet_sel)
-                    col2.metric("nomCeller únicos eRVC (sel)", unique_ervc_sel)
-                    col3.metric("Total Kg Extranet (sel)", total_kg_extranet_sel)
-                    col4.metric("kgTotals eRVC (sel)", total_kg_ervc_sel)
-                    col5.metric("Diferencia Porcentual Kg (%) (sel)", f"{diff_porcentual_sel:.2f}%")
-        else:
-            st.warning("No se encontraron columnas nipd o nomCeller en eRVC")
-
+                # Nombre de archivo dinámico según filtro
+                filename = "eRVC_procesado_filtrado.xlsx" if 'bodegas_seleccionadas' in locals() and bodegas_seleccionadas else "eRVC_procesado.xlsx"
+                
+                st.download_button(
+                    label="📁 Descargar archivo Excel",
+                    data=output.getvalue(),
+                    file_name=filename,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            
     except Exception as e:
-        st.error(f"Error procesando archivos: {e}")
+        st.error(f"❌ Error al procesar los archivos: {str(e)}")
+        st.info("💡 Verifica que los archivos tengan el formato correcto y contengan las columnas esperadas.")
+else:
+    # Mensaje de bienvenida mejorado
+    st.info("👋 **¡Bienvenido!** Sube los archivos eRVC y Extranet para comenzar el análisis.")
+    
+    # Información adicional con diseño atractivo
+    st.markdown("""
+    ### 📖 Instrucciones de Uso
+    
+    1. **📋 Carga el archivo eRVC** - Este será tu archivo de referencia (MASTER)
+    2. **🌐 Carga el archivo Extranet** - Declaraciones del verificador para procesar
+    3. **🔍 Analiza los resultados** - Revisa discrepancias y errores detectados
+    4. **💾 Exporta los datos** - Descarga los resultados procesados
+    
+    ### ✨ Características
+    
+    - 🧹 **Limpieza automática** de datos Extranet
+    - 🔍 **Detección de errores** en NIF y tickets
+    - 📊 **Visualizaciones interactivas** de discrepancias
+    - 🏭 **Filtrado por bodegas** para análisis específicos
+    - 💾 **Exportación** de resultados en Excel
+    """)
