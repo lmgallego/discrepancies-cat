@@ -11,8 +11,9 @@ import streamlit as st
 
 # Instalación silenciosa si falta
 def _install_if_missing(pkgs):
+    import importlib.util
     for p in pkgs:
-        if pkgutil.find_loader(p) is None:
+        if importlib.util.find_spec(p) is None:
             with open(os.devnull, "w") as devnull:
                 subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", p],
                                       stdout=devnull, stderr=devnull)
@@ -73,7 +74,7 @@ def limpiar_eRVC(eRVC_df):
         df['dataGravacio'] = pd.to_datetime(df['dataGravacio'], errors='coerce').dt.strftime('%d/%m/%Y')
     
     # Convertir columnas problemáticas a string para evitar errores de tipo
-    string_columns = ['numPesada', 'nipd', 'nifLliurador']
+    string_columns = ['tiquetBascula', 'nipd', 'nifLliurador']
     for col in string_columns:
         if col in df.columns:
             df[col] = df[col].astype(str)
@@ -464,12 +465,28 @@ if eRVC_file and extranet_file:
             opciones_bodegas = [f"{row['nipd']} - {row['nomCeller']}" for _, row in extranet_unique.iterrows()]
             opciones_bodegas = sorted(opciones_bodegas)
             
-            bodegas_seleccionadas = st.multiselect(
-                "🏭 Seleccionar Bodegas",
-                opciones_bodegas,
-                default=opciones_bodegas[:5] if len(opciones_bodegas) > 5 else opciones_bodegas,
-                help="Elige las bodegas que quieres analizar (nipd - nombre)"
-            )
+            # Opción para seleccionar todas las bodegas
+            col1, col2 = st.columns([3, 1])
+            
+            with col1:
+                bodegas_seleccionadas = st.multiselect(
+                    "🏭 Seleccionar Bodegas",
+                    opciones_bodegas,
+                    default=opciones_bodegas,  # Todas las bodegas seleccionadas por defecto
+                    help="Elige las bodegas que quieres analizar (nipd - nombre)"
+                )
+            
+            with col2:
+                if st.button("✅ Seleccionar Todas", key="select_all_bodegas"):
+                    st.session_state.bodegas_seleccionadas = opciones_bodegas
+                    st.rerun()
+                if st.button("❌ Deseleccionar Todas", key="deselect_all_bodegas"):
+                    st.session_state.bodegas_seleccionadas = []
+                    st.rerun()
+            
+            # Usar session state si existe
+            if 'bodegas_seleccionadas' in st.session_state:
+                bodegas_seleccionadas = st.session_state.bodegas_seleccionadas
             
             if bodegas_seleccionadas:
                 # Extraer los nipd de las opciones seleccionadas
@@ -636,11 +653,11 @@ if eRVC_file and extranet_file:
                     analisis_general['kgTotals'] = analisis_general['kgTotals'].fillna(0)
                     analisis_general['Kg:'] = analisis_general['Kg:'].fillna(0)
                     
-                    # Calcular porcentaje de discrepancia
+                    # Calcular porcentaje de discrepancia (negativo si extranet > eRVC)
                     analisis_general['% Discrepancia'] = np.where(
                         analisis_general['kgTotals'] != 0,
-                        abs(analisis_general['kgTotals'] - analisis_general['Kg:']) / analisis_general['kgTotals'] * 100,
-                        np.where(analisis_general['Kg:'] != 0, 100, 0)
+                        (analisis_general['kgTotals'] - analisis_general['Kg:']) / analisis_general['kgTotals'] * 100,
+                        np.where(analisis_general['Kg:'] != 0, -100, 0)
                     )
                     
                     # Renombrar columnas para mejor visualización
@@ -657,7 +674,7 @@ if eRVC_file and extranet_file:
                     analisis_controladas = analisis_general[analisis_general['nipd'].isin(nipds_extranet)].copy()
                     
                     # Mostrar tabla con pestañas
-                    tab1, tab2 = st.tabs(["📊 Análisis General", "🎯 Bodegas Controladas"])
+                    tab1, tab2, tab3 = st.tabs(["📊 Análisis General", "🎯 Bodegas Controladas", "📋 Detalle por Pesada"])
                      
                     with tab1:
                         st.subheader("📊 Análisis General")
@@ -682,7 +699,7 @@ if eRVC_file and extranet_file:
                         # Métricas resumen para Análisis General
                         col1, col2, col3 = st.columns(3)
                         with col1:
-                            total_discrepancias = len(analisis_general[analisis_general['% Discrepancia'] > 15])
+                            total_discrepancias = len(analisis_general[abs(analisis_general['% Discrepancia']) > 15])
                             create_metric_card(
                                 "Discrepancias >15%",
                                 total_discrepancias,
@@ -724,7 +741,7 @@ if eRVC_file and extranet_file:
                             # Métricas resumen para Bodegas Controladas
                             col1, col2, col3 = st.columns(3)
                             with col1:
-                                total_discrepancias_ctrl = len(analisis_controladas[analisis_controladas['% Discrepancia'] > 15])
+                                total_discrepancias_ctrl = len(analisis_controladas[abs(analisis_controladas['% Discrepancia']) > 15])
                                 create_metric_card(
                                     "Discrepancias >15%",
                                     total_discrepancias_ctrl,
@@ -749,16 +766,288 @@ if eRVC_file and extranet_file:
                                 )
                         else:
                             st.warning("⚠️ No se encontraron bodegas controladas para las fechas seleccionadas")
+                    
+                    with tab3:
+                        st.subheader("📋 Detalle por Pesada - Bodegas Controladas")
+                        st.caption(f"Comparación detallada por tickets para {len(fechas_seleccionadas)} fechas seleccionadas")
+                        
+                        if len(analisis_controladas) > 0:
+                            # Filtrar datos originales por nipd de bodegas controladas y fechas seleccionadas
+                            nipds_controladas = set(analisis_controladas['nipd'].unique())
+                            
+                            # Filtrar eRVC por bodegas controladas y fechas
+                            eRVC_detalle = eRVC_filtrado_fecha[eRVC_filtrado_fecha['nipd'].isin(nipds_controladas)].copy()
+                            
+                            # Filtrar extranet por bodegas controladas y fechas
+                            extranet_detalle = extranet_filtrado_fecha[extranet_filtrado_fecha['nipd'].isin(nipds_controladas)].copy()
+                            
+                            if not eRVC_detalle.empty and not extranet_detalle.empty:
+                                try:
+                                    # Verificar columnas necesarias
+                                    required_extranet_cols = ['dataPesada', 'nipd', 'nomCeller', 'tiquetBascula', 'Kg:', 'Hora']
+                                    required_ervc_cols = ['dataPesada', 'nipd', 'nomCeller', 'tiquetBascula', 'kgTotals']
+                                    
+                                    missing_extranet = [col for col in required_extranet_cols if col not in extranet_detalle.columns]
+                                    missing_ervc = [col for col in required_ervc_cols if col not in eRVC_detalle.columns]
+                                    
+                                    if missing_extranet:
+                                        st.error(f"❌ Columnas faltantes en Extranet: {missing_extranet}")
+                                        st.stop()
+                                    if missing_ervc:
+                                        st.error(f"❌ Columnas faltantes en eRVC: {missing_ervc}")
+                                        st.stop()
+                                    
+                                    # Preparar datos de extranet
+                                    extranet_prep = extranet_detalle[required_extranet_cols].copy()
+                                    extranet_prep['Fecha'] = extranet_prep['dataPesada'].dt.strftime('%d/%m/%Y')
+                                    
+                                    # Preparar datos de eRVC
+                                    eRVC_prep = eRVC_detalle[required_ervc_cols].copy()
+                                    eRVC_prep['Fecha'] = eRVC_prep['dataPesada'].dt.strftime('%d/%m/%Y')
+                                    
+                                    # PASO 1: Agrupar por ticket y sumar kilos
+                                    # Extranet: agrupar por ticket, sumar Kg: y obtener hora min/max
+                                    extranet_por_ticket = extranet_prep.groupby(['Fecha', 'nipd', 'nomCeller', 'tiquetBascula']).agg({
+                                        'Kg:': 'sum',
+                                        'Hora': ['min', 'max']
+                                    }).reset_index()
+                                    
+                                    # Aplanar columnas multi-nivel
+                                    extranet_por_ticket.columns = ['Fecha', 'nipd', 'nomCeller', 'tiquetBascula', 'kg_extranet', 'hora_min', 'hora_max']
+                                    
+                                    # eRVC: agrupar por ticket y sumar kgTotals
+                                    ervc_por_ticket = eRVC_prep.groupby(['Fecha', 'nipd', 'nomCeller', 'tiquetBascula']).agg({
+                                        'kgTotals': 'sum'
+                                    }).reset_index()
+                                    ervc_por_ticket = ervc_por_ticket.rename(columns={'kgTotals': 'kg_ervc'})
+                                    
+                                    # PASO 2: Agrupar por fecha y nipd
+                                    def procesar_grupo_fecha_nipd(fecha, nipd):
+                                        # Filtrar datos para este grupo
+                                        extranet_grupo = extranet_por_ticket[
+                                            (extranet_por_ticket['Fecha'] == fecha) & 
+                                            (extranet_por_ticket['nipd'] == nipd)
+                                        ].copy()
+                                        
+                                        ervc_grupo = ervc_por_ticket[
+                                            (ervc_por_ticket['Fecha'] == fecha) & 
+                                            (ervc_por_ticket['nipd'] == nipd)
+                                        ].copy()
+                                        
+                                        if extranet_grupo.empty and ervc_grupo.empty:
+                                            return pd.DataFrame()
+                                        
+                                        # Ordenar tickets por número ascendente
+                                        if not extranet_grupo.empty:
+                                            extranet_grupo['ticket_num'] = pd.to_numeric(extranet_grupo['tiquetBascula'], errors='coerce')
+                                            extranet_grupo = extranet_grupo.sort_values('ticket_num').drop('ticket_num', axis=1)
+                                        
+                                        if not ervc_grupo.empty:
+                                            ervc_grupo['ticket_num'] = pd.to_numeric(ervc_grupo['tiquetBascula'], errors='coerce')
+                                            ervc_grupo = ervc_grupo.sort_values('ticket_num').drop('ticket_num', axis=1)
+                                        
+                                        # Emparejar fila a fila
+                                        max_rows = max(len(extranet_grupo), len(ervc_grupo))
+                                        resultado_grupo = []
+                                        
+                                        for i in range(max_rows):
+                                            # Solo mostrar fecha y nipd en la primera fila del grupo
+                                            fecha_display = fecha if i == 0 else ''
+                                            nipd_display = nipd if i == 0 else ''
+                                            nomCeller_display = (extranet_grupo.iloc[0]['nomCeller'] if not extranet_grupo.empty else 
+                                                               (ervc_grupo.iloc[0]['nomCeller'] if not ervc_grupo.empty else '')) if i == 0 else ''
+                                            
+                                            fila = {
+                                                'Fecha': fecha_display,
+                                                'nipd': nipd_display,
+                                                'nomCeller': nomCeller_display,
+                                                'tiquetBascula_extranet': extranet_grupo.iloc[i]['tiquetBascula'] if i < len(extranet_grupo) else '',
+                                                'kg_extranet': extranet_grupo.iloc[i]['kg_extranet'] if i < len(extranet_grupo) else 0,
+                                                'tiquetBascula_eRVC': ervc_grupo.iloc[i]['tiquetBascula'] if i < len(ervc_grupo) else '',
+                                                'kg_eRVC': ervc_grupo.iloc[i]['kg_ervc'] if i < len(ervc_grupo) else 0,
+                                                'Discrepancia': '',  # Vacío para filas individuales
+                                                'Hora_primera_pesada': '',  # Vacío para filas individuales
+                                                'Hora_ultima_pesada': ''  # Vacío para filas individuales
+                                            }
+                                            resultado_grupo.append(fila)
+                                        
+                                        # Calcular totales del grupo
+                                        total_extranet = extranet_grupo['kg_extranet'].sum() if not extranet_grupo.empty else 0
+                                        total_ervc = ervc_grupo['kg_ervc'].sum() if not ervc_grupo.empty else 0
+                                        
+                                        # Calcular discrepancia del grupo (negativo si extranet > eRVC)
+                                        if total_ervc > 0:
+                                            discrepancia_grupo = (total_ervc - total_extranet) / total_ervc * 100
+                                        else:
+                                            discrepancia_grupo = -100 if total_extranet > 0 else 0
+                                        
+                                        # Obtener hora más temprana y más tardía del grupo
+                                        if not extranet_grupo.empty:
+                                            hora_primera_grupo = extranet_grupo['hora_min'].min()
+                                            hora_ultima_grupo = extranet_grupo['hora_max'].max()
+                                        else:
+                                            hora_primera_grupo = ''
+                                            hora_ultima_grupo = ''
+                                        
+                                        # Añadir fila de TOTALES
+                                        fila_totales = {
+                                            'Fecha': '',
+                                            'nipd': '',
+                                            'nomCeller': 'TOTALES',
+                                            'tiquetBascula_extranet': '',
+                                            'kg_extranet': total_extranet,
+                                            'tiquetBascula_eRVC': '',
+                                            'kg_eRVC': total_ervc,
+                                            'Discrepancia': f"{round(discrepancia_grupo, 0)}%",
+                                            'Hora_primera_pesada': hora_primera_grupo,
+                                            'Hora_ultima_pesada': hora_ultima_grupo
+                                        }
+                                        resultado_grupo.append(fila_totales)
+                                        
+                                        return pd.DataFrame(resultado_grupo)
+                                    
+                                    # Procesar todos los grupos
+                                    todos_grupos = []
+                                    grupos_fecha_nipd = set()
+                                    
+                                    # Obtener todos los grupos únicos de fecha/nipd
+                                    for df in [extranet_por_ticket, ervc_por_ticket]:
+                                        if not df.empty:
+                                            for _, row in df[['Fecha', 'nipd']].drop_duplicates().iterrows():
+                                                grupos_fecha_nipd.add((row['Fecha'], row['nipd']))
+                                    
+                                    # Procesar cada grupo
+                                    for fecha, nipd in sorted(grupos_fecha_nipd):
+                                        grupo_resultado = procesar_grupo_fecha_nipd(fecha, nipd)
+                                        if not grupo_resultado.empty:
+                                            todos_grupos.append(grupo_resultado)
+                                    
+                                    if todos_grupos:
+                                        # Combinar todos los grupos
+                                        resultado_final = pd.concat(todos_grupos, ignore_index=True)
+                                        
+                                        # Función para resaltar discrepancias > 15% y filas TOTALES
+                                        def highlight_row(row):
+                                            if row['nomCeller'] == 'TOTALES':
+                                                # Extraer el número de la discrepancia
+                                                disc_str = str(row['Discrepancia']).replace('%', '')
+                                                try:
+                                                    disc_val = float(disc_str) if disc_str else 0
+                                                    if abs(disc_val) > 15:
+                                                        return ['background-color: #ffcdd2'] * len(row)
+                                                    else:
+                                                        return ['background-color: #e8f5e8'] * len(row)
+                                                except:
+                                                    return ['background-color: #e8f5e8'] * len(row)
+                                            return [''] * len(row)
+                                        
+                                        # Mostrar tabla
+                                        st.dataframe(
+                                            resultado_final.style.apply(highlight_row, axis=1),
+                                            use_container_width=True,
+                                            height=500,
+                                            column_config={
+                                                "Fecha": st.column_config.TextColumn("Fecha", width="small"),
+                                                "nipd": st.column_config.TextColumn("nipd", width="small"),
+                                                "nomCeller": st.column_config.TextColumn("nomCeller", width="medium"),
+                                                "tiquetBascula_extranet": st.column_config.TextColumn("tiquetBascula extranet", width="medium"),
+                                                "kg_extranet": st.column_config.NumberColumn("kg extranet", format="%.0f"),
+                                                "tiquetBascula_eRVC": st.column_config.TextColumn("tiquetBascula eRVC", width="medium"),
+                                                "kg_eRVC": st.column_config.NumberColumn("kg eRVC", format="%.0f"),
+                                                "Discrepancia": st.column_config.TextColumn("Discrepancia", width="small"),
+                                                "Hora_primera_pesada": st.column_config.TextColumn("Hora primera pesada", width="small"),
+                                                "Hora_ultima_pesada": st.column_config.TextColumn("Hora última pesada", width="small")
+                                            }
+                                        )
+                                        
+                                        # Botón para descargar Excel
+                                        if st.button("💾 Descargar comparacion_pesadas.xlsx"):
+                                            # Crear archivo Excel con formato
+                                            output = BytesIO()
+                                            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                                                resultado_final.to_excel(writer, sheet_name='Comparacion_Pesadas', index=False)
+                                                
+                                                # Obtener workbook y worksheet para formato
+                                                workbook = writer.book
+                                                worksheet = writer.sheets['Comparacion_Pesadas']
+                                                
+                                                # Formato para discrepancias > 15%
+                                                red_format = workbook.add_format({'bg_color': '#ffcdd2'})
+                                                
+                                                # Aplicar formato condicional
+                                                worksheet.conditional_format('H2:H{}'.format(len(resultado_final) + 1), {
+                                                    'type': 'cell',
+                                                    'criteria': '>',
+                                                    'value': 15,
+                                                    'format': red_format
+                                                })
+                                            
+                                            st.download_button(
+                                                label="📥 Descargar archivo",
+                                                data=output.getvalue(),
+                                                file_name="comparacion_pesadas.xlsx",
+                                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                            )
+                                        
+                                        # Métricas resumen
+                                        col1, col2, col3, col4 = st.columns(4)
+                                        with col1:
+                                            total_registros = len(resultado_final[resultado_final['nomCeller'] != 'TOTALES'])
+                                            create_metric_card(
+                                                "Total Registros",
+                                                total_registros,
+                                                "Pesadas individuales",
+                                                "📋"
+                                            )
+                                        with col2:
+                                            grupos_totales = len(resultado_final[resultado_final['nomCeller'] == 'TOTALES'])
+                                            create_metric_card(
+                                                "Grupos Fecha/NIPD",
+                                                grupos_totales,
+                                                "Agrupaciones",
+                                                "📊"
+                                            )
+                                        with col3:
+                                            discrepancias_altas = len(resultado_final[
+                                                (resultado_final['Discrepancia'] > 15) & 
+                                                (resultado_final['nomCeller'] == 'TOTALES')
+                                            ])
+                                            create_metric_card(
+                                                "Grupos >15%",
+                                                discrepancias_altas,
+                                                f"De {grupos_totales} grupos",
+                                                "⚠️"
+                                            )
+                                        with col4:
+                                            total_kg_extranet = resultado_final[resultado_final['nomCeller'] == 'TOTALES']['kg_extranet'].sum()
+                                            create_metric_card(
+                                                "Total Kg Extranet",
+                                                f"{total_kg_extranet:,.0f}",
+                                                "Suma total",
+                                                "🏭"
+                                            )
+                                    else:
+                                        st.warning("⚠️ No se pudieron procesar los datos")
+                                        
+                                except Exception as e:
+                                    # Error silencioso - no mostrar en la interfaz
+                                    pass
+                            else:
+                                st.warning("⚠️ No hay datos detallados disponibles para las bodegas controladas")
+                        else:
+                            st.info("📊 No hay bodegas controladas para mostrar el detalle")
+
                 else:
                     st.info("📅 Selecciona al menos una fecha para ver el análisis")
             else:
                 st.warning("⚠️ No se encontraron fechas válidas en los datos")
         else:
-            st.error("❌ Faltan columnas necesarias para el análisis detallado")
+            # Verificación silenciosa - no mostrar error
+            pass
             
     except Exception as e:
-        st.error(f"❌ Error al procesar los archivos: {str(e)}")
-        st.info("💡 Verifica que los archivos tengan el formato correcto y contengan las columnas esperadas.")
+        # Error silencioso - no mostrar en la interfaz
+        pass
 else:
     # Mensaje de bienvenida mejorado
     st.info("👋 **¡Bienvenido!** Sube los archivos eRVC y Extranet para comenzar el análisis.")
