@@ -2,7 +2,7 @@
 # APP STREAMLIT: eRVC (MASTER) + DeclaracionVerificador (EXTRANET)
 # Limpieza, transformaciones, comprobación de integridad y selector múltiple nipd
 # ================================================
-import sys, subprocess, pkgutil, os
+import os
 import pandas as pd
 import numpy as np
 from io import BytesIO
@@ -10,14 +10,7 @@ import unicodedata, re
 import streamlit as st
 
 # Instalación silenciosa si falta
-def _install_if_missing(pkgs):
-    import importlib.util
-    for p in pkgs:
-        if importlib.util.find_spec(p) is None:
-            with open(os.devnull, "w") as devnull:
-                subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", p],
-                                      stdout=devnull, stderr=devnull)
-_install_if_missing(["xlsxwriter", "openpyxl", "plotly", "streamlit-shadcn-ui"])
+# Dependencias instaladas via requirements.txt
 
 # Importar componentes modernos de UI
 try:
