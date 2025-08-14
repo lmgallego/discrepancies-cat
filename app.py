@@ -12,11 +12,8 @@ import streamlit as st
 # Instalación silenciosa si falta
 # Dependencias instaladas via requirements.txt
 
-# Importar componentes modernos de UI
-try:
-    import streamlit_shadcn_ui as ui
-except ImportError:
-    ui = None
+# Componentes nativos de Streamlit únicamente
+# Eliminada dependencia streamlit-shadcn-ui para mejor compatibilidad de deploy
 
 # ------------------------------
 # Utilidades
@@ -305,20 +302,9 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# Función para crear métricas modernas
+# Función para crear métricas modernas con componentes nativos
 def create_metric_card(title, value, description="", icon="📊"):
-    if ui is not None:
-        try:
-            return ui.metric_card(
-                title=title,
-                content=str(value),
-                description=description,
-                key=f"metric_{title.replace(' ', '_').lower()}"
-            )
-        except:
-            pass
-    
-    # Fallback a métricas estándar con estilo mejorado
+    """Crea tarjetas de métricas usando solo componentes nativos de Streamlit"""
     st.markdown(f"""
     <div class="metric-card">
         <h4 style="margin: 0; color: #667eea;">{icon} {title}</h4>
